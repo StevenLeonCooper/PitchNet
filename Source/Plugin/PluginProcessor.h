@@ -166,12 +166,9 @@ public:
     return regionCanvasAnalysisPending.load();
   }
 
-  // Analyse a single region's audio into its own persistent Project (keyed by
-  // regionKey) and, if that region is the active one, show it on the canvas.
-  // Also stores the region's processed audio on its modification so the timeline
-  // clip + per-region playback can read it headlessly (Stage B). Called by the
-  // document controller after extracting one region's audio. Uses a dedicated
-  // controller so it never disturbs the composite analysis / playback pipeline.
+  // Analyse an audio modification's source into its shared Project and, if the
+  // selected region belongs to it, show that Project on the canvas. Region
+  // timing is retained only for UI focus/highlight and host playhead mapping.
   // True when the project contains actual rendered note edits or global
   // pitch/formant offsets — only such projects publish per-region
   // processed audio; unedited regions play their original source.
@@ -180,6 +177,7 @@ public:
                                  PitchNetAudioModification *modification,
                                  juce::int64 startSampleInModification,
                                  double timelineOffsetSeconds,
+                                 double timelineEndSeconds,
                                  const juce::AudioBuffer<float> &buffer,
                                  double sampleRate);
 
@@ -366,6 +364,9 @@ private:
   // Projects remain here. Moving ownership preserves the object identity and
   // raw pointers retained by that region's undo actions.
   std::map<juce::String, AraRegionState> araRegions;
+  // Live edit/undo ownership is modification-scoped. Region-keyed state above
+  // is retained only for archive compatibility and legacy restoration.
+  std::map<PitchNetAudioModification *, AraRegionState> araModifications;
   juce::String activeRegionKey;
   // True only while the canvas is showing the ACTIVE REGION's own (region-local)
   // project. onProjectDataChanged fires for every project change — including
