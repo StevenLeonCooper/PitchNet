@@ -446,6 +446,14 @@ bool PitchNetPlaybackRenderer::renderProcessedRegions(
 bool PitchNetPlaybackRenderer::processBlock(
     juce::AudioBuffer<float> &buffer, juce::AudioProcessor::Realtime realtime,
     const juce::AudioPlayHead::PositionInfo &posInfo) noexcept {
+  auto *docCtrl = getDocController();
+  if (!docCtrl)
+    return true;
+
+  const auto lock = docCtrl->getProcessingLock();
+  if (!lock.isLocked())
+    return true;
+
   auto timeInSamples = posInfo.getTimeInSamples().orFallback(0);
   bool isPlaying = posInfo.getIsPlaying();
   int numSamples = buffer.getNumSamples();
@@ -453,7 +461,6 @@ bool PitchNetPlaybackRenderer::processBlock(
   const bool hasPlaybackRegions = !getPlaybackRegions().empty();
 
   // Get document controller for accessing MainComponent
-  auto *docCtrl = getDocController();
   syncHostLoopState(docCtrl, posInfo, shouldSyncUi);
 
   auto notifyHostStopped = [&]() {
@@ -862,6 +869,10 @@ bool PitchNetEditorRenderer::processBlock(
 
   auto *docCtrl = getDocController();
   if (!docCtrl)
+    return true;
+
+  const auto lock = docCtrl->getProcessingLock();
+  if (!lock.isLocked())
     return true;
 
   auto &previewState = docCtrl->getPreviewState();
@@ -2206,6 +2217,18 @@ void PitchNetDocumentController::stopPreview() {
   previewState.previewEndTime.store(0.0);
   previewState.previewedRegion.store(nullptr);
   previewState.previewClaimedRenderer.store(nullptr);
+}
+
+void PitchNetDocumentController::willBeginEditing(juce::ARADocument *) {
+  processBlockLock.enterWrite();
+}
+
+void PitchNetDocumentController::didEndEditing(juce::ARADocument *) {
+  processBlockLock.exitWrite();
+}
+
+juce::ScopedTryReadLock PitchNetDocumentController::getProcessingLock() {
+  return juce::ScopedTryReadLock{processBlockLock};
 }
 
 juce::ARAPlaybackRenderer *

@@ -278,6 +278,8 @@ public:
   const AraPreviewState &getPreviewState() const { return previewState; }
 
 protected:
+  void willBeginEditing(juce::ARADocument *document) override;
+  void didEndEditing(juce::ARADocument *document) override;
   juce::ARAPlaybackRenderer *doCreatePlaybackRenderer() noexcept override;
   juce::ARAEditorRenderer *doCreateEditorRenderer() override;
   // Create our custom modification so each region can carry its own processed
@@ -295,6 +297,10 @@ protected:
       const juce::ARAStoreObjectsFilter *filter) noexcept override;
 
 private:
+  friend class PitchNetPlaybackRenderer;
+  friend class PitchNetEditorRenderer;
+
+  juce::ScopedTryReadLock getProcessingLock();
   void processDocument(juce::ARADocument *document,
                        juce::ARAPlaybackRegion *excludedRegion = nullptr,
                        juce::ARAAudioSource *excludedSource = nullptr);
@@ -349,6 +355,7 @@ private:
       std::make_shared<AnalysisState>();
   std::thread analysisThread;
   std::thread analysisJoinerThread;
+  juce::ReadWriteLock processBlockLock;
 };
 
 #endif // JucePlugin_Enable_ARA
