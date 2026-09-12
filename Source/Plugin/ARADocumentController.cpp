@@ -1180,7 +1180,15 @@ void PitchNetDocumentController::releaseOwningProcessor(
 
 void PitchNetDocumentController::setEditorProcessor(
     PitchNetAudioProcessor *processor) {
+  if (editorProcessor == processor)
+    return;
+
+  if (editorProcessor != nullptr)
+    editorProcessor->releaseAraRegionCanvasOwnership();
   editorProcessor = processor;
+  if (editorProcessor != nullptr &&
+      editorProcessor->getMainComponent() != nullptr)
+    mainComponent = editorProcessor->getMainComponent();
   flushPendingAraRegionProjects();
 }
 
@@ -1815,7 +1823,6 @@ bool PitchNetDocumentController::processPlaybackRegions(
   if (!firstRegion || !firstRegion->getAudioModification())
     return false;
 
-  currentPlaybackRegion = firstRegion;
   currentPlaybackRegions = playbackRegions;
   analysisTimelineSampleRate = projectSampleRate > 0.0 ? projectSampleRate
                                                        : 0.0;
@@ -1980,7 +1987,6 @@ void PitchNetDocumentController::didAddPlaybackRegionToRegionSequence(
     return;
 
   currentRegionSequence = regionSequence;
-  currentPlaybackRegion = playbackRegion;
   currentDocument = regionSequence->getDocument();
 }
 
@@ -1989,8 +1995,21 @@ void PitchNetDocumentController::willDestroyRegionSequence(
   if (regionSequence != currentRegionSequence)
     return;
 
+  currentPlaybackRegions.erase(
+      std::remove_if(currentPlaybackRegions.begin(),
+                     currentPlaybackRegions.end(),
+                     [regionSequence](auto *region) {
+                       return region != nullptr &&
+                              region->getRegionSequence() == regionSequence;
+                     }),
+      currentPlaybackRegions.end());
+  if (currentPlaybackRegion != nullptr &&
+      currentPlaybackRegion->getRegionSequence() == regionSequence) {
+    if (previewState.previewedRegion.load() == currentPlaybackRegion)
+      previewState.previewedRegion.store(nullptr);
+    currentPlaybackRegion = nullptr;
+  }
   currentRegionSequence = nullptr;
-  currentPlaybackRegion = nullptr;
 }
 
 void PitchNetDocumentController::snapshotRegionState(
@@ -2004,7 +2023,8 @@ void PitchNetDocumentController::snapshotRegionState(
     return;
   juce::MemoryBlock archive;
   auto *processor = getRegionCanvasProcessor();
-  if ((processor && processor->serializeAraRegionProject(liveKey, archive)) ||
+  if ((processor &&
+       processor->serializeAraModificationProject(modification, archive)) ||
       modification->copyProjectArchiveForRegion(liveKey, archive))
     modification->setProjectArchiveForRegion(archiveKey, archive.getData(),
                                              archive.getSize());
@@ -2028,10 +2048,6 @@ void PitchNetDocumentController::didAddPlaybackRegionToAudioModification(
   if (!audioModification)
     return;
 
-  // Touch the persistent-ID/index key while the host object is known-valid.
-  if (playbackRegion != nullptr)
-    pitchnetRegionKey(*playbackRegion);
-
   auto *audioSource = audioModification->getAudioSource();
   auto *document = audioSource ? audioSource->getDocument() : currentDocument;
   clearStaleRegionSequenceFilter(document);
@@ -2047,23 +2063,12 @@ void PitchNetDocumentController::didAddPlaybackRegionToAudioModification(
 
   currentAudioSource = audioSource;
   currentDocument = document;
-  currentPlaybackRegion = playbackRegion;
   if (playbackRegion &&
       std::find(currentPlaybackRegions.begin(), currentPlaybackRegions.end(),
                 playbackRegion) == currentPlaybackRegions.end())
     currentPlaybackRegions.push_back(playbackRegion);
   currentRegionSequence = playbackRegion ? playbackRegion->getRegionSequence()
                                          : currentRegionSequence;
-
-  // A region added while the editor is open is also the region the user is
-  // creating, so make it the active canvas region immediately.  Do this only
-  // with a live editor: the headless add/restore path already establishes its
-  // selection when the editor is constructed, and pre-selecting it here would
-  // make that later selection look like a no-op.
-  if (auto *processor = getRegionCanvasProcessor();
-      playbackRegion != nullptr && processor != nullptr &&
-      processor->getMainComponent() != nullptr)
-    processor->setActiveAraRegion(playbackRegion);
 }
 
 void PitchNetDocumentController::willRemovePlaybackRegionFromAudioModification(
@@ -2072,17 +2077,10 @@ void PitchNetDocumentController::willRemovePlaybackRegionFromAudioModification(
   if (!audioModification || !playbackRegion)
     return;
 
-  snapshotRegionState(*playbackRegion);
-
-  if (!shouldProcessPlaybackRegion(playbackRegion))
-    return;
-
   auto *audioSource = audioModification->getAudioSource();
-  if (!audioSource)
-    return;
-
   if (playbackRegion == currentPlaybackRegion) {
-    previewState.previewedRegion.store(nullptr);
+    if (previewState.previewedRegion.load() == playbackRegion)
+      previewState.previewedRegion.store(nullptr);
     currentPlaybackRegion = nullptr;
   }
   currentPlaybackRegions.erase(std::remove(currentPlaybackRegions.begin(),
@@ -2090,12 +2088,13 @@ void PitchNetDocumentController::willRemovePlaybackRegionFromAudioModification(
                                            playbackRegion),
                                currentPlaybackRegions.end());
 
-  // The modification now owns an archived copy for version reactivation.
-  // Release the destroyed live region's Project and undo manager together.
+  // Clear selection bookkeeping without destroying the AudioModification's
+  // shared Project or undo history.
   if (auto *processor = getRegionCanvasProcessor())
     processor->removeAraRegion(pitchnetRegionKey(*playbackRegion));
 
-  currentDocument = audioSource->getDocument();
+  if (audioSource != nullptr)
+    currentDocument = audioSource->getDocument();
 }
 
 void PitchNetDocumentController::didUpdatePlaybackRegionProperties(
@@ -2130,10 +2129,21 @@ void PitchNetDocumentController::didUpdatePlaybackRegionProperties(
 
 void PitchNetDocumentController::willDestroyPlaybackRegion(
     juce::ARAPlaybackRegion *playbackRegion) {
-  if (playbackRegion == currentPlaybackRegion) {
+  if (playbackRegion == nullptr)
+    return;
+
+  if (previewState.previewedRegion.load() == playbackRegion)
     previewState.previewedRegion.store(nullptr);
+  if (playbackRegion == currentPlaybackRegion) {
     currentPlaybackRegion = nullptr;
   }
+  currentPlaybackRegions.erase(std::remove(currentPlaybackRegions.begin(),
+                                           currentPlaybackRegions.end(),
+                                           playbackRegion),
+                               currentPlaybackRegions.end());
+
+  if (auto *processor = getRegionCanvasProcessor())
+    processor->removeAraRegion(pitchnetRegionKey(*playbackRegion));
 }
 
 void PitchNetDocumentController::reanalyze() {
@@ -2447,10 +2457,9 @@ bool PitchNetDocumentController::doStoreObjectsToStream(
         if (!output.writeString(audioModification->getPersistentID()))
           return false;
 
-        // One entry per region that has its own analysed/edited project, keyed
-        // by its index in this modification. Each entry carries the region's
-        // project JSON and, when present, its rendered processed audio so reload
-        // playback is pitch-corrected without re-analysing/re-rendering.
+        // Preserve the legacy per-region archive entries and index keys. Live
+        // project ownership is modification-scoped, so each entry for this
+        // modification serializes that same shared project.
         const auto *pitchModification =
             dynamic_cast<const PitchNetAudioModification *>(audioModification);
         struct RegionEntry {
@@ -2476,9 +2485,12 @@ bool PitchNetDocumentController::doStoreObjectsToStream(
           // instant the host asks us to save; the modification cache can lag
           // behind an edit or an asynchronous resynthesis callback.
           bool hasProject = false;
+          if (processor != nullptr && pitchModification != nullptr)
+            hasProject = processor->serializeAraModificationProject(
+                pitchModification, json);
           if (processor != nullptr && hasDistinctLiveKey)
-            hasProject =
-                processor->serializeAraRegionProject(liveKey, json);
+            hasProject = hasProject ||
+                         processor->serializeAraRegionProject(liveKey, json);
           if (!hasProject && pitchModification != nullptr &&
               hasDistinctLiveKey)
             hasProject =

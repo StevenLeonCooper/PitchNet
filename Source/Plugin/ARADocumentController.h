@@ -30,11 +30,9 @@ class PitchNetAudioProcessor;
 class PitchNetDocumentController;
 class PitchNetEditorRenderer;
 
-// Persistent identity for an ARA playback region: the audio-modification
-// persistent ID plus the region's current index within that modification. Host
-// refs are reassigned every session, so they cannot be used for saved DAW
-// projects. Used to key per-region Projects and per-region processed audio so
-// each region/track is analysed, edited, and played back independently.
+// PlaybackRegion keys are retained for live selection bookkeeping and the
+// legacy per-region archive layout. They are not the owner of live edit state;
+// that identity is the associated AudioModification.
 juce::String pitchnetRegionKey(const juce::ARAPlaybackRegion &region);
 juce::String pitchnetRegionKeyForIndex(const juce::String &modificationID,
                                        int regionIndex);
@@ -212,10 +210,8 @@ public:
       override;
   void reanalyze();
 
-  // Extract a single region's audio and hand it to the processor for per-region
-  // analysis (populates that region's persistent Project and, if it is the
-  // active region, switches the canvas to it). Used for selection-driven
-  // per-region editing without disturbing the composite pipeline.
+  // Extract an explicitly selected region's AudioModification source and hand
+  // it to the processor for analysis or restored-state hydration.
   void requestRegionCanvasAnalysis(juce::ARAPlaybackRegion *region);
   void setCurrentPlaybackRegion(juce::ARAPlaybackRegion *region);
 

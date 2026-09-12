@@ -1,21 +1,34 @@
 #pragma once
 
 #include "../JuceHeader.h"
-
-#if JucePlugin_Enable_ARA
+#include "../Models/Project.h"
+#include "../Undo/PitchUndoManager.h"
 
 #include <map>
 #include <memory>
 #include <vector>
 
-// Per-region PROCESSED audio stored on the ARA audio modification, so that each
-// playback region/track carries its own analysed/processed result independent of
-// the editor. This mirrors VocalNet's ARADemoPluginAudioModification /
-// ConvertedRegionData model: the timeline draws each clip from here and the
-// The legacy region container below is retained only for archive compatibility;
-// live rendering uses ProcessedModificationData and does not use region IDs.
+struct PitchNetAraEditState {
+  std::unique_ptr<Project> project;
+  std::unique_ptr<PitchUndoManager> undoManager;
+
+  PitchUndoManager *ensureUndoManager() {
+    if (!undoManager)
+      undoManager = std::make_unique<PitchUndoManager>(100);
+    return undoManager.get();
+  }
+};
+
+#if JucePlugin_Enable_ARA
+
+// Shared processed audio is owned by the ARA AudioModification, so every
+// PlaybackRegion that references it renders the same edits. The per-region
+// containers below remain only for compatibility with the existing archive
+// layout and legacy restores; live rendering uses ProcessedModificationData.
 class PitchNetAudioModification final : public juce::ARAAudioModification {
 public:
+  using RuntimeEditState = PitchNetAraEditState;
+
   struct ProcessedRegionData {
     juce::AudioBuffer<float> audio;
     double sampleRate = 0.0;
@@ -83,8 +96,16 @@ public:
         processedRegions[regionID] = std::move(copy);
       }
       regionProjectArchives = sourceModification->regionProjectArchives;
+      if (sourceModification->runtimeEditState.project != nullptr)
+        runtimeEditState.project = std::make_unique<Project>(
+            *sourceModification->runtimeEditState.project);
       clonedPersistentID = sourceModification->getPersistentID();
     }
+  }
+
+  RuntimeEditState &getRuntimeEditState() noexcept { return runtimeEditState; }
+  const RuntimeEditState &getRuntimeEditState() const noexcept {
+    return runtimeEditState;
   }
 
   // The host assigns the clone's persistent ID after construction. Rebase
@@ -383,6 +404,7 @@ public:
 
 private:
   juce::String clonedPersistentID;
+  RuntimeEditState runtimeEditState;
   mutable juce::SpinLock processedAudioLock;
   std::map<juce::String, std::unique_ptr<ProcessedRegionData>> processedRegions;
   std::unique_ptr<ProcessedModificationData> processedModificationData;

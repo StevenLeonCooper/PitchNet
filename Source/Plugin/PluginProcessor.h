@@ -7,6 +7,7 @@
 #include "../Undo/PitchUndoManager.h"
 #include "HostCompatibility.h"
 #include "NonAraCaptureController.h"
+#include "PitchNetAudioModification.h"
 #include <atomic>
 #include <map>
 #include <memory>
@@ -154,12 +155,11 @@ public:
   // document-controller binding and the headless realtime playback state.
   void didBindToARA() noexcept override;
 
-  // Make the given ARA playback region the one shown/edited on the canvas.
-  // Each region keeps its own persistent Project; switching saves the outgoing
-  // region's edits and loads the incoming region's project. Called from the
-  // editor when the host selection changes (and, later, from the in-plugin
-  // timeline). Safe to call with a region that has no analysis yet.
+  // Make the given ARA playback region the selection shown on the canvas. The
+  // Project and undo history are owned by its AudioModification, so another
+  // region for the same modification reuses the same live state.
   void setActiveAraRegion(juce::ARAPlaybackRegion *region);
+  void releaseAraRegionCanvasOwnership();
   void updateActiveAraRegionProperties(juce::ARAPlaybackRegion *region);
   juce::String getActiveAraRegionKey() const { return activeRegionKey; }
   bool isAraRegionCanvasAnalysisPending() const {
@@ -181,8 +181,8 @@ public:
                                  const juce::AudioBuffer<float> &buffer,
                                  double sampleRate);
 
-  // Called when a playback region is removed. Its Project and undo history
-  // have the same lifetime and are destroyed together.
+  // Called when a playback region is removed. Clears selection state for that
+  // region while preserving its AudioModification's shared Project/history.
   void removeAraRegion(const juce::String &regionKey);
 
   // Per-region project persistence. ARA archives omit both project waveforms
@@ -193,6 +193,9 @@ public:
   // regionKey.
   bool serializeAraRegionProject(const juce::String &regionKey,
                                  juce::MemoryBlock &out) const;
+  bool serializeAraModificationProject(
+      const PitchNetAudioModification *modification,
+      juce::MemoryBlock &out) const;
   bool hasAraRegionProject(const juce::String &regionKey) const;
   bool araRegionProjectNeedsSourceHydration(
       const juce::String &regionKey) const;
@@ -349,24 +352,10 @@ private:
   juce::String araAnalysisProjectJson;
   std::atomic<bool> araRenderPendingRerun{false};
 
-  struct AraRegionState {
-    std::unique_ptr<Project> project;
-    std::unique_ptr<PitchUndoManager> undoManager;
+  using AraRegionState = PitchNetAraEditState;
 
-    PitchUndoManager *ensureUndoManager() {
-      if (!undoManager)
-        undoManager = std::make_unique<PitchUndoManager>(100);
-      return undoManager.get();
-    }
-  };
-
-  // The active Project temporarily moves into the editor controller; inactive
-  // Projects remain here. Moving ownership preserves the object identity and
-  // raw pointers retained by that region's undo actions.
+  // Legacy region-keyed restored state retained for archive compatibility.
   std::map<juce::String, AraRegionState> araRegions;
-  // Live edit/undo ownership is modification-scoped. Region-keyed state above
-  // is retained only for archive compatibility and legacy restoration.
-  std::map<PitchNetAudioModification *, AraRegionState> araModifications;
   juce::String activeRegionKey;
   // True only while the canvas is showing the ACTIVE REGION's own (region-local)
   // project. onProjectDataChanged fires for every project change — including
@@ -391,6 +380,7 @@ private:
   std::atomic<bool> regionCanvasAnalysisPending{false};
   std::atomic<std::uint64_t> regionCanvasAnalysisGeneration{0};
   juce::String pendingRegionCanvasAnalysisKey;
+  std::atomic<std::uint64_t> regionCanvasRenderEpoch{0};
   std::atomic<bool> regionCanvasRenderPendingRerun{false};
 
   // Non-ARA capture (Stage 2A): decoupled controller

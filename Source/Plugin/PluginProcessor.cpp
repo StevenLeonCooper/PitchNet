@@ -69,11 +69,26 @@ void stampProjectForModification(Project &project,
   audioData.timelineOffsetSeconds = 0.0;
   audioData.playbackRegionRanges.clear();
 
-  const auto [start, end] = getModificationRangeForRegion(
-      modification, startSampleInModification, regionStartSeconds,
-      regionEndSeconds);
-  if (end > start)
-    audioData.playbackRegionRanges = {{start, end}};
+  if (modification != nullptr) {
+    for (auto *region :
+         modification->getPlaybackRegions<juce::ARAPlaybackRegion>()) {
+      if (region == nullptr)
+        continue;
+      const auto [start, end] = getModificationRangeForRegion(
+          modification, region->getStartInAudioModificationSamples(),
+          region->getStartInPlaybackTime(), region->getEndInPlaybackTime());
+      if (end > start)
+        audioData.playbackRegionRanges.emplace_back(start, end);
+    }
+  }
+
+  if (audioData.playbackRegionRanges.empty()) {
+    const auto [start, end] = getModificationRangeForRegion(
+        modification, startSampleInModification, regionStartSeconds,
+        regionEndSeconds);
+    if (end > start)
+      audioData.playbackRegionRanges.emplace_back(start, end);
+  }
 }
 
 // Seed a timeline-anchored Project waveform from a region-local processed
@@ -1917,6 +1932,7 @@ void PitchNetAudioProcessor::requestPluginProjectRender(
   const double renderRegionStartSeconds = activeRegionStartSeconds;
   const double renderRegionEndSeconds = activeRegionEndSeconds;
   const auto renderStartSampleInModification = activeStartSampleInModification;
+  const auto renderEpoch = regionCanvasRenderEpoch.load();
   auto &pendingRerun =
       renderActiveAraRegion ? regionCanvasRenderPendingRerun
                             : araRenderPendingRerun;
@@ -1931,7 +1947,12 @@ void PitchNetAudioProcessor::requestPluginProjectRender(
       },
       [this, controller, renderActiveAraRegion, renderRegionKey,
        renderArchivedRegionKey, renderModification, renderRegionStartSeconds,
-       renderRegionEndSeconds, renderStartSampleInModification](bool success) {
+       renderRegionEndSeconds, renderStartSampleInModification,
+       renderEpoch](bool success) {
+        if (renderActiveAraRegion &&
+            regionCanvasRenderEpoch.load() != renderEpoch)
+          return;
+
         auto *renderedProject = controller != nullptr ? controller->getProject()
                                                      : nullptr;
 
@@ -1950,14 +1971,14 @@ void PitchNetAudioProcessor::requestPluginProjectRender(
               persistentProject = mainComponent->getProject();
             if (persistentProject == nullptr && renderModification != nullptr)
               persistentProject =
-                  araModifications[renderModification].project.get();
+                  renderModification->getRuntimeEditState().project.get();
             if (persistentProject == nullptr)
               persistentProject = araRegions[renderRegionKey].project.get();
 
             if (persistentProject != nullptr)
               mergeRenderedState(*persistentProject, *renderedProject);
             else if (renderModification != nullptr)
-              araModifications[renderModification].project =
+              renderModification->getRuntimeEditState().project =
                   std::make_unique<Project>(*renderedProject);
             else
               araRegions[renderRegionKey].project =
@@ -2334,7 +2355,7 @@ void PitchNetAudioProcessor::setMainComponent(IMainView *mc) {
     if (canvasShowsActiveAraRegion && activeRegionKey.isNotEmpty()) {
       auto project = mainComponent->exchangeProject(nullptr);
       if (activeModification != nullptr)
-        araModifications[activeModification].project = std::move(project);
+        activeModification->getRuntimeEditState().project = std::move(project);
       else
         araRegions[activeRegionKey].project = std::move(project);
     }
@@ -2368,7 +2389,7 @@ void PitchNetAudioProcessor::setMainComponent(IMainView *mc) {
       restoredPersistentProject = true;
     } else if (activeRegionKey.isNotEmpty()) {
       auto *activeState = activeModification != nullptr
-                              ? &araModifications[activeModification]
+                              ? &activeModification->getRuntimeEditState()
                               : nullptr;
       auto activeIt = araRegions.find(activeRegionKey);
       if (activeState != nullptr && !activeState->project &&
@@ -2502,12 +2523,6 @@ void PitchNetAudioProcessor::setStateInformation(const void *data,
     }
     araRegions.clear();
 #if JucePlugin_Enable_ARA
-    for (auto &[modification, modificationState] : araModifications) {
-      juce::ignoreUnused(modification);
-      if (modificationState.undoManager)
-        modificationState.undoManager->clear();
-    }
-    araModifications.clear();
     activeRegionKey.clear();
     activeModification = nullptr;
     canvasShowsActiveAraRegion = false;
@@ -2631,6 +2646,9 @@ void PitchNetAudioProcessor::setActiveAraRegion(
   if (region == nullptr)
     return;
 
+  if (araDocumentController != nullptr)
+    araDocumentController->setEditorProcessor(this);
+
   const auto key = pitchnetRegionKey(*region);
   if (key.isEmpty())
     return;
@@ -2652,8 +2670,10 @@ void PitchNetAudioProcessor::setActiveAraRegion(
                                   activeStartSampleInModification,
                                   activeRegionStartSeconds,
                                   activeRegionEndSeconds);
+      return;
     }
-    return;
+    if (mainComponent == nullptr)
+      return;
   }
 
   if (key == activeRegionKey) {
@@ -2682,7 +2702,8 @@ void PitchNetAudioProcessor::setActiveAraRegion(
                                   activeRegionStartSeconds,
                                   activeRegionEndSeconds);
       if (activeModification != nullptr)
-        araModifications[activeModification].project = std::move(outgoing);
+        activeModification->getRuntimeEditState().project =
+            std::move(outgoing);
       else
         araRegions[activeRegionKey].project = std::move(outgoing);
     }
@@ -2697,7 +2718,7 @@ void PitchNetAudioProcessor::setActiveAraRegion(
       region->getStartInAudioModificationSamples();
 
   auto &incomingState = activeModification != nullptr
-                            ? araModifications[activeModification]
+                            ? activeModification->getRuntimeEditState()
                             : araRegions[key];
   auto *incomingUndoManager = incomingState.ensureUndoManager();
   if (mainComponent != nullptr)
@@ -2746,7 +2767,7 @@ void PitchNetAudioProcessor::setActiveAraRegion(
     }
 
     auto &modificationState = activeModification != nullptr
-                                  ? araModifications[activeModification]
+                                  ? activeModification->getRuntimeEditState()
                                   : araRegions[key];
     if (activeModification != nullptr && !modificationState.project &&
         it != araRegions.end() && it->second.project)
@@ -2820,18 +2841,21 @@ void PitchNetAudioProcessor::updateActiveAraRegionProperties(
                                   activeStartSampleInModification,
                                   activeRegionStartSeconds,
                                   activeRegionEndSeconds);
-
-      publishPersistentProjectSnapshot(*project);
-
-      if (araAnalysisReady)
-        mainComponent->bindRealtimeProcessor(realtimeProcessor);
     }
-  } else if (auto it = araRegions.find(key);
-             it != araRegions.end() && it->second.project) {
-    stampProjectForModification(*it->second.project, activeModification,
-                                activeStartSampleInModification,
-                                activeRegionStartSeconds,
-                                activeRegionEndSeconds);
+  } else {
+    AraRegionState *state = nullptr;
+    if (activeModification != nullptr) {
+      state = &activeModification->getRuntimeEditState();
+    } else {
+      const auto it = araRegions.find(key);
+      if (it != araRegions.end())
+        state = &it->second;
+    }
+    if (state != nullptr && state->project)
+      stampProjectForModification(*state->project, activeModification,
+                                  activeStartSampleInModification,
+                                  activeRegionStartSeconds,
+                                  activeRegionEndSeconds);
   }
 }
 
@@ -2901,7 +2925,7 @@ void PitchNetAudioProcessor::analyzeAraRegionForCanvas(
         // Cache this region's analysis so re-selecting it is instant and its
         // edits persist across switches.
         auto &modificationState = modification != nullptr
-                                       ? araModifications[modification]
+                                       ? modification->getRuntimeEditState()
                                        : araRegions[regionKey];
         modificationState.project = std::make_unique<Project>(*project);
         auto *regionUndoManager = modificationState.ensureUndoManager();
@@ -2966,22 +2990,52 @@ void PitchNetAudioProcessor::analyzeAraRegionForCanvas(
       });
 }
 
+void PitchNetAudioProcessor::releaseAraRegionCanvasOwnership() {
+  regionCanvasRenderEpoch.fetch_add(1);
+  regionCanvasRenderPendingRerun.store(false);
+
+  if (mainComponent != nullptr && canvasShowsActiveAraRegion &&
+      activeRegionKey.isNotEmpty()) {
+    auto project = mainComponent->exchangeProject(nullptr);
+    if (project != nullptr) {
+      if (activeModification != nullptr)
+        activeModification->getRuntimeEditState().project = std::move(project);
+      else
+        araRegions[activeRegionKey].project = std::move(project);
+    }
+    mainComponent->bindUndoManager(undoManager.get());
+  }
+
+  if (regionCanvasAnalysisPending.load()) {
+    regionCanvasAnalysisGeneration.fetch_add(1);
+    if (regionCanvasController)
+      regionCanvasController->requestCancelLoading();
+    pendingRegionCanvasAnalysisKey.clear();
+    regionCanvasAnalysisPending.store(false);
+    if (mainComponent != nullptr)
+      mainComponent->hideAnalysisProgress();
+  }
+
+  activeModification = nullptr;
+  activeRegionKey.clear();
+  activeStartSampleInModification = 0;
+  activeRegionStartSeconds = 0.0;
+  activeRegionEndSeconds = 0.0;
+  canvasShowsActiveAraRegion = false;
+  if (mainComponent != nullptr) {
+    mainComponent->bindUndoManager(undoManager.get());
+    mainComponent->finishBackendRender(false);
+    mainComponent->setStatusMessage({});
+  }
+}
+
 void PitchNetAudioProcessor::removeAraRegion(
     const juce::String &regionKey) {
   if (regionKey.isEmpty())
     return;
 
-  if (regionKey == activeRegionKey) {
-    if (mainComponent != nullptr && canvasShowsActiveAraRegion &&
-        activeRegionKey.isNotEmpty()) {
-      auto removedProject = mainComponent->exchangeProject(nullptr);
-      juce::ignoreUnused(removedProject);
-      mainComponent->bindUndoManager(undoManager.get());
-    }
-    activeModification = nullptr;
-    activeRegionKey.clear();
-    canvasShowsActiveAraRegion = false;
-  }
+  if (regionKey == activeRegionKey)
+    releaseAraRegionCanvasOwnership();
 
   araRegions.erase(regionKey);
 }
@@ -2996,9 +3050,7 @@ bool PitchNetAudioProcessor::serializeAraRegionProject(
     project = mainComponent->getProject();
   if (project == nullptr && regionKey == activeRegionKey &&
       activeModification != nullptr) {
-    const auto it = araModifications.find(activeModification);
-    if (it != araModifications.end())
-      project = it->second.project.get();
+    project = activeModification->getRuntimeEditState().project.get();
   }
   if (project == nullptr && activeModification != nullptr &&
       regionKey.startsWith(juce::String(activeModification->getPersistentID()) +
@@ -3009,14 +3061,35 @@ bool PitchNetAudioProcessor::serializeAraRegionProject(
   if (project == nullptr && activeModification != nullptr &&
       regionKey.startsWith(juce::String(activeModification->getPersistentID()) +
                            ":")) {
-    const auto it = araModifications.find(activeModification);
-    if (it != araModifications.end())
-      project = it->second.project.get();
+    project = activeModification->getRuntimeEditState().project.get();
   }
   if (project == nullptr) {
     const auto it = araRegions.find(regionKey);
     if (it != araRegions.end())
       project = it->second.project.get();
+  }
+  if (project == nullptr)
+    return false;
+
+  return ProjectSerializer::toBinaryArchive(
+             *project, out,
+             ProjectSerializer::BinaryArchiveMode::hostBackedARA) &&
+         out.getSize() > 0;
+}
+
+bool PitchNetAudioProcessor::serializeAraModificationProject(
+    const PitchNetAudioModification *modification,
+    juce::MemoryBlock &out) const {
+  out.setSize(0);
+  if (modification == nullptr)
+    return false;
+
+  const Project *project = nullptr;
+  if (modification == activeModification && canvasShowsActiveAraRegion &&
+      mainComponent != nullptr)
+    project = mainComponent->getProject();
+  if (project == nullptr) {
+    project = modification->getRuntimeEditState().project.get();
   }
   if (project == nullptr)
     return false;
@@ -3033,8 +3106,7 @@ bool PitchNetAudioProcessor::hasAraRegionProject(
       mainComponent != nullptr && mainComponent->getProject() != nullptr)
     return true;
   if (regionKey == activeRegionKey && activeModification != nullptr) {
-    const auto it = araModifications.find(activeModification);
-    if (it != araModifications.end() && it->second.project != nullptr)
+    if (activeModification->getRuntimeEditState().project != nullptr)
       return true;
   }
   const auto it = araRegions.find(regionKey);
@@ -3049,9 +3121,7 @@ bool PitchNetAudioProcessor::araRegionProjectNeedsSourceHydration(
     project = mainComponent->getProject();
   if (project == nullptr && regionKey == activeRegionKey &&
       activeModification != nullptr) {
-    const auto it = araModifications.find(activeModification);
-    if (it != araModifications.end())
-      project = it->second.project.get();
+    project = activeModification->getRuntimeEditState().project.get();
   }
   if (project == nullptr) {
     const auto it = araRegions.find(regionKey);
@@ -3082,9 +3152,7 @@ bool PitchNetAudioProcessor::hydrateAraRegionProject(
     project = mainComponent->getProject();
   if (project == nullptr && regionKey == activeRegionKey &&
       activeModification != nullptr) {
-    const auto it = araModifications.find(activeModification);
-    if (it != araModifications.end())
-      project = it->second.project.get();
+    project = activeModification->getRuntimeEditState().project.get();
   }
   if (project == nullptr) {
     const auto it = araRegions.find(regionKey);
@@ -3191,9 +3259,7 @@ bool PitchNetAudioProcessor::araRegionProjectAppearsToCover(
     project = mainComponent->getProject();
   if (project == nullptr && regionKey == activeRegionKey &&
       activeModification != nullptr) {
-    const auto it = araModifications.find(activeModification);
-    if (it != araModifications.end())
-      project = it->second.project.get();
+    project = activeModification->getRuntimeEditState().project.get();
   }
   if (project == nullptr) {
     const auto it = araRegions.find(regionKey);
@@ -3226,9 +3292,7 @@ bool PitchNetAudioProcessor::showAraRegionProjectIfActive(
 
   AraRegionState *state = nullptr;
   if (activeModification != nullptr && regionKey == activeRegionKey) {
-    const auto modIt = araModifications.find(activeModification);
-    if (modIt != araModifications.end())
-      state = &modIt->second;
+    state = &activeModification->getRuntimeEditState();
   }
   auto it = araRegions.find(regionKey);
   if (state == nullptr && it != araRegions.end())
@@ -3306,7 +3370,7 @@ void PitchNetAudioProcessor::restoreAraRegionProject(const juce::String &regionK
     regionCanvasAnalysisPending.store(false);
 
     auto &liveState = activeModification != nullptr
-                          ? araModifications[activeModification]
+                          ? activeModification->getRuntimeEditState()
                           : araRegions[liveKey];
     liveState.project = std::move(project);
     auto *liveUndoManager = liveState.ensureUndoManager();
