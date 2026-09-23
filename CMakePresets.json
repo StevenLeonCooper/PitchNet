@@ -48,6 +48,18 @@
         "PITCHNET_DEV_BUILD": "OFF",
         "PITCHNET_ARA_DIAGNOSTICS": "OFF"
       }
+    },
+    {
+      "name": "pitchnet-summer26",
+      "displayName": "PitchNet Summer 26 (personal)",
+      "description": "Personal build: PR #8, #9 and #10 merged together, under its own identity so it installs side by side with every other build and never claims another build's saved ARA state. Never send this identity upstream.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "PITCHNET_SUMMER_BUILD": "ON",
+        "PITCHNET_DEV_BUILD": "OFF",
+        "PITCHNET_ARA_DIAGNOSTICS": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -71,6 +83,14 @@
       "name": "pitchnet-release",
       "displayName": "PitchNet VST3 (Release)",
       "configurePreset": "pitchnet-release",
+      "targets": [
+        "PitchNetPlugin_VST3"
+      ]
+    },
+    {
+      "name": "pitchnet-summer26",
+      "displayName": "PitchNet Summer 26 VST3 (personal)",
+      "configurePreset": "pitchnet-summer26",
       "targets": [
         "PitchNetPlugin_VST3"
       ]

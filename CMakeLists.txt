@@ -223,13 +223,29 @@ endif()
 # and projects saved with a release build keep resolving to that release build.
 option(PITCHNET_DEV_BUILD "Build with a separate development plugin identity" OFF)
 
+# PERSONAL BUILD - never send this upstream.
+# This branch (personal/pitchnet-summer-26) is PR #8, #9 and #10 merged
+# together as if upstream had accepted all three - the "everything, as of
+# the last day of summer 2026" build for personal use. Given its own identity
+# so it installs side by side with every other identity and never claims or
+# is claimed by another build's saved ARA state.
+option(PITCHNET_SUMMER_BUILD "Build the personal Summer 26 identity" OFF)
+
 # Diagnostic logging for the ARA model graph and render path. Writes through the
 # existing AppLogger to %APPDATA%/PitchNet/Logs/debug_<session>.log. Model-graph
 # events are low frequency; the render report is one line per region, once. Off
 # by default - release builds contain none of it.
 option(PITCHNET_ARA_DIAGNOSTICS "Log ARA model-graph and render diagnostics" OFF)
 
-if(PITCHNET_DEV_BUILD)
+if(PITCHNET_SUMMER_BUILD)
+    set(PITCHNET_PRODUCT_NAME "PitchNet Summer 26")
+    set(PITCHNET_BUNDLE_ID "com.sessionloops.pitchnet.summer26")
+    set(PITCHNET_PLUGIN_CODE PTS6)
+    message(STATUS
+        "PitchNet: PERSONAL Summer 26 build "
+        "(product '${PITCHNET_PRODUCT_NAME}', plugin code ${PITCHNET_PLUGIN_CODE}, "
+        "bundle id ${PITCHNET_BUNDLE_ID})")
+elseif(PITCHNET_DEV_BUILD)
     set(PITCHNET_PRODUCT_NAME "PitchNet Dev")
     set(PITCHNET_BUNDLE_ID "com.sessionloops.pitchnet.dev")
     set(PITCHNET_PLUGIN_CODE PTD1)
