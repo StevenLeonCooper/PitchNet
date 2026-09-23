@@ -203,7 +203,21 @@ endif()
 # and projects saved with a release build keep resolving to that release build.
 option(PITCHNET_DEV_BUILD "Build with a separate development plugin identity" OFF)
 
-if(PITCHNET_DEV_BUILD)
+# LOCAL TEST IDENTITY - never send this upstream.
+# Stock upstream master under its own name, so it can be installed beside a
+# patched build and the two compared in the same session without either
+# overwriting the other or stealing the other's saved ARA state.
+option(PITCHNET_STOCK_BUILD "Build stock upstream under a separate test identity" OFF)
+
+if(PITCHNET_STOCK_BUILD)
+    set(PITCHNET_PRODUCT_NAME "PitchNet 0.6.1")
+    set(PITCHNET_BUNDLE_ID "com.sessionloops.pitchnet.v061")
+    set(PITCHNET_PLUGIN_CODE PT61)
+    message(STATUS
+        "PitchNet: STOCK 0.6.1 comparison build "
+        "(product '${PITCHNET_PRODUCT_NAME}', plugin code ${PITCHNET_PLUGIN_CODE}, "
+        "bundle id ${PITCHNET_BUNDLE_ID})")
+elseif(PITCHNET_DEV_BUILD)
     set(PITCHNET_PRODUCT_NAME "PitchNet Dev")
     set(PITCHNET_BUNDLE_ID "com.sessionloops.pitchnet.dev")
     set(PITCHNET_PLUGIN_CODE PTD1)

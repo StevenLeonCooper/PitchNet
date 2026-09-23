@@ -45,6 +45,17 @@
         "CMAKE_BUILD_TYPE": "Release",
         "PITCHNET_DEV_BUILD": "OFF"
       }
+    },
+    {
+      "name": "pitchnet-stock061",
+      "displayName": "PitchNet 0.6.1 (stock, for comparison)",
+      "description": "Stock upstream master under its own plugin identity, so it installs beside a patched build and neither can claim the other's ARA state. Local test scaffolding.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "PITCHNET_STOCK_BUILD": "ON",
+        "PITCHNET_DEV_BUILD": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -68,6 +79,14 @@
       "name": "pitchnet-release",
       "displayName": "PitchNet VST3 (Release)",
       "configurePreset": "pitchnet-release",
+      "targets": [
+        "PitchNetPlugin_VST3"
+      ]
+    },
+    {
+      "name": "pitchnet-stock061",
+      "displayName": "PitchNet 0.6.1 VST3 (stock)",
+      "configurePreset": "pitchnet-stock061",
       "targets": [
         "PitchNetPlugin_VST3"
       ]
